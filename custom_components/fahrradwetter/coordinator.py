@@ -143,7 +143,7 @@ class FahrradwetterCoordinator(DataUpdateCoordinator[FahrradwetterData]):
                 owm_current = await self._fetch_owm_current(session)
                 owm_forecast = await self._fetch_owm_forecast(session)
 
-        # OWM current parsing (wind is m/s → convert to km/h)
+        # OWM current parsing (wind is m/s â convert to km/h)
         owm_temp = None
         owm_wind_kmh = None
         owm_rain = None

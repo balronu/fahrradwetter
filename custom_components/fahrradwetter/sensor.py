@@ -110,7 +110,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 
 class FahrradwetterBase(CoordinatorEntity[FahrradwetterCoordinator], SensorEntity):
     _attr_should_poll = False
-    _attr_unit_of_measurement = "°C"
+    _attr_unit_of_measurement = "Â°C"
 
     def __init__(self, coordinator, entry: ConfigEntry, unique_suffix: str, name_suffix: str,
                  min_temp: float, max_wind: float, max_rain: float):
@@ -156,7 +156,7 @@ class FahrradwetterNow(FahrradwetterBase):
 
 class FahrradwetterNextBlock(FahrradwetterBase):
     def __init__(self, coordinator, entry, min_temp, max_wind, max_rain):
-        super().__init__(coordinator, entry, "next_block", "Nächster Block (3h)", min_temp, max_wind, max_rain)
+        super().__init__(coordinator, entry, "next_block", "NÃ¤chster Block (3h)", min_temp, max_wind, max_rain)
 
     @property
     def native_value(self):
