@@ -16,6 +16,7 @@ Du kannst die Datenquelle auswählen:
   - `… OK Jetzt`
   - `… OK Morgen HH:MM`
 - ✅ Keine template.yaml nötig
+- Hybrider Modus möglich
 
 ## Installation (HACS)
 1. HACS → **Integrationen**
