@@ -1,6 +1,6 @@
 {
   "name": "Fahrradwetter",
   "content_in_root": false,
-  "render_readme": true,
-  "zip_release": true
+  "domain": "fahrradwetter",
+  "render_readme": true
 }
