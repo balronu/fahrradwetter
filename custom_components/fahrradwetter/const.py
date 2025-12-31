@@ -5,7 +5,7 @@ CONF_LAT = "lat"
 CONF_LON = "lon"
 
 CONF_MODE = "mode"
-MODE_OWM_ONLY = "owm_only"
+MODE_OWM_ONLY = "owm"
 MODE_LOCAL_ONLY = "local_only"
 MODE_HYBRID = "hybrid"
 
