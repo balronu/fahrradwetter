@@ -1,95 +1,134 @@
-"""Config flow for Fahrradwetter integration (v1.1.5)."""
+"""Config flow for Fahrradwetter integration."""
 from __future__ import annotations
 
-import re
-from typing import Any
+from datetime import time
+import logging
 
 import voluptuous as vol
 
 from homeassistant import config_entries
 from homeassistant.helpers import selector
 
-from .const import (
-    DOMAIN,
-    # required settings
-    CONF_API_KEY,
-    CONF_LAT,
-    CONF_LON,
-    # options/settings used by sensor.py
-    CONF_TIMES,
-    CONF_MIN_TEMP,
-    CONF_MAX_WIND_KMH,
-    CONF_MAX_RAIN,
-    DEFAULT_TIMES,
-    DEFAULT_MIN_TEMP,
-    DEFAULT_MAX_WIND_KMH,
-    DEFAULT_MAX_RAIN,
-)
+_LOGGER = logging.getLogger(__name__)
 
-TIME_RE = re.compile(r"^\d{2}:\d{2}$")
+# -----------------------------------------------------------------------------
+# Robust const import (fallbacks, so the flow never crashes on missing consts)
+# -----------------------------------------------------------------------------
+try:
+    from .const import (
+        DOMAIN,
+        # Mode handling (optional in older versions)
+        CONF_MODE,
+        MODE_HYBRID,
+        MODE_OWM,
+        MODE_LOCAL,
+        # OWM / location
+        CONF_API_KEY,
+        CONF_LAT,
+        CONF_LON,
+        # Local sensors
+        CONF_LOCAL_TEMP_ENTITY,
+        CONF_LOCAL_WIND_ENTITY,
+        CONF_LOCAL_RAIN_ENTITY,
+        # Settings
+        CONF_TOMORROW_TIME_1,
+        CONF_TOMORROW_TIME_2,
+        CONF_UPDATE_INTERVAL,
+        CONF_WIND_UNIT,
+        WIND_UNIT_KMH,
+        WIND_UNIT_MS,
+        DEFAULT_UPDATE_INTERVAL_MIN,
+    )
+except Exception as err:  # pragma: no cover
+    _LOGGER.error("Failed to import const.py, using fallbacks: %s", err)
+
+    DOMAIN = "fahrradwetter"
+
+    CONF_MODE = "mode"
+    MODE_HYBRID = "hybrid"
+    MODE_OWM = "owm"
+    MODE_LOCAL = "local"
+
+    CONF_API_KEY = "api_key"
+    CONF_LAT = "lat"
+    CONF_LON = "lon"
+
+    CONF_LOCAL_TEMP_ENTITY = "local_temp_entity"
+    CONF_LOCAL_WIND_ENTITY = "local_wind_entity"
+    CONF_LOCAL_RAIN_ENTITY = "local_rain_entity"
+
+    CONF_TOMORROW_TIME_1 = "tomorrow_time_1"
+    CONF_TOMORROW_TIME_2 = "tomorrow_time_2"
+    CONF_UPDATE_INTERVAL = "update_interval"
+    CONF_WIND_UNIT = "wind_unit"
+    WIND_UNIT_KMH = "kmh"
+    WIND_UNIT_MS = "ms"
+    DEFAULT_UPDATE_INTERVAL_MIN = 30
 
 
-def _api_key_selector() -> selector.TextSelector:
+def _sensor_entity_selector() -> selector.EntitySelector:
+    return selector.EntitySelector(selector.EntitySelectorConfig(domain=["sensor"]))
+
+
+def _defaults(d: dict) -> dict:
+    return {
+        CONF_TOMORROW_TIME_1: d.get(CONF_TOMORROW_TIME_1, time(6, 30, 0)),
+        CONF_TOMORROW_TIME_2: d.get(CONF_TOMORROW_TIME_2, time(16, 0, 0)),
+        CONF_UPDATE_INTERVAL: d.get(CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL_MIN),
+        CONF_WIND_UNIT: d.get(CONF_WIND_UNIT, WIND_UNIT_KMH),
+    }
+
+
+def _api_key_selector():
     return selector.TextSelector(
         selector.TextSelectorConfig(type=selector.TextSelectorType.PASSWORD)
     )
 
 
-def _lat_selector(default: float) -> selector.NumberSelector:
+def _lat_selector():
     return selector.NumberSelector(
         selector.NumberSelectorConfig(
             min=-90,
             max=90,
             step=0.0001,
             mode=selector.NumberSelectorMode.BOX,
-            unit_of_measurement="°",
         )
     )
 
 
-def _lon_selector(default: float) -> selector.NumberSelector:
+def _lon_selector():
     return selector.NumberSelector(
         selector.NumberSelectorConfig(
             min=-180,
             max=180,
             step=0.0001,
             mode=selector.NumberSelectorMode.BOX,
-            unit_of_measurement="°",
         )
     )
 
 
-def _parse_times(times_str: str) -> list[str]:
-    """
-    Parse "06:30, 16:00" -> ["06:30", "16:00"]
-    """
-    raw = [t.strip() for t in (times_str or "").split(",") if t.strip()]
-    out: list[str] = []
-    for t in raw:
-        if not TIME_RE.match(t):
-            raise ValueError("invalid_time_format")
-        hh, mm = t.split(":")
-        if not (0 <= int(hh) <= 23 and 0 <= int(mm) <= 59):
-            raise ValueError("invalid_time_value")
-        out.append(f"{int(hh):02d}:{int(mm):02d}")
-    # dedupe, keep order
-    seen: set[str] = set()
-    uniq: list[str] = []
-    for t in out:
-        if t not in seen:
-            seen.add(t)
-            uniq.append(t)
-    if not uniq:
-        raise ValueError("empty_times")
-    return uniq
+def _wind_unit_selector(default_value: str):
+    return selector.SelectSelector(
+        selector.SelectSelectorConfig(
+            options=[
+                {"value": WIND_UNIT_KMH, "label": "km/h"},
+                {"value": WIND_UNIT_MS, "label": "m/s"},
+            ],
+            mode=selector.SelectSelectorMode.DROPDOWN,
+        )
+    )
 
 
-def _times_default_str(times: Any) -> str:
-    if isinstance(times, list):
-        return ", ".join(str(x) for x in times)
-    if isinstance(times, str) and times.strip():
-        return times.strip()
-    return ", ".join(DEFAULT_TIMES)
+def _update_interval_selector(default_value: int):
+    return selector.NumberSelector(
+        selector.NumberSelectorConfig(
+            min=5,
+            max=180,
+            step=5,
+            mode=selector.NumberSelectorMode.SLIDER,
+            unit_of_measurement="min",
+        )
+    )
 
 
 class FahrradwetterConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -97,104 +136,142 @@ class FahrradwetterConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     VERSION = 1
 
-    async def async_step_user(self, user_input: dict[str, Any] | None = None):
-        errors: dict[str, str] = {}
+    def __init__(self) -> None:
+        self._mode: str = MODE_HYBRID
+        self._data: dict = {}
 
-        # Default to HA Home location
-        ha_lat = float(self.hass.config.latitude or 0.0)
-        ha_lon = float(self.hass.config.longitude or 0.0)
+    def _home_lat_lon_defaults(self) -> tuple[float, float]:
+        # HA "Zone Home" / core config location
+        lat = float(getattr(self.hass.config, "latitude", 0.0) or 0.0)
+        lon = float(getattr(self.hass.config, "longitude", 0.0) or 0.0)
+        return lat, lon
+
+    async def async_step_user(self, user_input=None):
+        """Step 1: choose mode."""
+        errors = {}
 
         if user_input is not None:
-            # Validate required fields
-            api_key = (user_input.get(CONF_API_KEY) or "").strip()
-            if not api_key:
-                errors[CONF_API_KEY] = "required"
+            self._mode = user_input[CONF_MODE]
+            self._data[CONF_MODE] = self._mode
 
-            # lat/lon are numbers (selector gives number), but still validate
-            lat = user_input.get(CONF_LAT)
-            lon = user_input.get(CONF_LON)
-            if lat is None:
-                errors[CONF_LAT] = "required"
-            if lon is None:
-                errors[CONF_LON] = "required"
+            if self._mode == MODE_LOCAL:
+                return await self.async_step_local()
+            if self._mode == MODE_OWM:
+                return await self.async_step_owm()
+            return await self.async_step_hybrid()
 
-            # Parse times
-            try:
-                times = _parse_times(user_input.get(CONF_TIMES, ""))
-            except ValueError:
-                errors[CONF_TIMES] = "invalid_times"
+        schema = vol.Schema(
+            {
+                vol.Required(CONF_MODE, default=MODE_HYBRID): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=[
+                            {"value": MODE_HYBRID, "label": "Hybrid (lokal + OWM Forecast/Fallback)"},
+                            {"value": MODE_OWM, "label": "Nur OpenWeatherMap (mit Forecast)"},
+                            {"value": MODE_LOCAL, "label": "Nur lokale Sensoren (ohne Forecast)"},
+                        ],
+                        mode=selector.SelectSelectorMode.DROPDOWN,
+                    )
+                )
+            }
+        )
+        return self.async_show_form(step_id="user", data_schema=schema, errors=errors)
 
-            # Validate thresholds
-            try:
-                min_temp = float(user_input.get(CONF_MIN_TEMP, DEFAULT_MIN_TEMP))
-                max_wind = float(user_input.get(CONF_MAX_WIND_KMH, DEFAULT_MAX_WIND_KMH))
-                max_rain = float(user_input.get(CONF_MAX_RAIN, DEFAULT_MAX_RAIN))
-            except Exception:
-                errors["base"] = "invalid_values"
+    async def async_step_local(self, user_input=None):
+        """Local sensors only (no OWM)."""
+        errors = {}
+        defaults = _defaults(self._data)
+
+        if user_input is not None:
+            if not user_input.get(CONF_LOCAL_TEMP_ENTITY):
+                errors[CONF_LOCAL_TEMP_ENTITY] = "required"
 
             if not errors:
-                # store normalized data
-                data = {
-                    CONF_API_KEY: api_key,
-                    CONF_LAT: float(lat),
-                    CONF_LON: float(lon),
-                    CONF_TIMES: times,
-                    CONF_MIN_TEMP: float(min_temp),
-                    CONF_MAX_WIND_KMH: float(max_wind),
-                    CONF_MAX_RAIN: float(max_rain),
-                }
+                self._data.update(user_input)
+                return self.async_create_entry(title="Fahrradwetter", data=self._data)
 
-                # Optional: only one instance
-                await self.async_set_unique_id(DOMAIN)
-                self._abort_if_unique_id_configured()
+        schema = vol.Schema(
+            {
+                vol.Required(CONF_LOCAL_TEMP_ENTITY): _sensor_entity_selector(),
+                vol.Optional(CONF_LOCAL_WIND_ENTITY): _sensor_entity_selector(),
+                vol.Optional(CONF_LOCAL_RAIN_ENTITY): _sensor_entity_selector(),
 
-                return self.async_create_entry(title="Fahrradwetter", data=data)
+                vol.Optional(CONF_TOMORROW_TIME_1, default=defaults[CONF_TOMORROW_TIME_1]): selector.TimeSelector(),
+                vol.Optional(CONF_TOMORROW_TIME_2, default=defaults[CONF_TOMORROW_TIME_2]): selector.TimeSelector(),
+                vol.Optional(CONF_UPDATE_INTERVAL, default=defaults[CONF_UPDATE_INTERVAL]): _update_interval_selector(defaults[CONF_UPDATE_INTERVAL]),
+                vol.Optional(CONF_WIND_UNIT, default=defaults[CONF_WIND_UNIT]): _wind_unit_selector(defaults[CONF_WIND_UNIT]),
+            }
+        )
+        return self.async_show_form(step_id="local", data_schema=schema, errors=errors)
+
+    async def async_step_owm(self, user_input=None):
+        """OWM only."""
+        errors = {}
+        defaults = _defaults(self._data)
+        home_lat, home_lon = self._home_lat_lon_defaults()
+
+        if user_input is not None:
+            if not user_input.get(CONF_API_KEY):
+                errors[CONF_API_KEY] = "required"
+            if user_input.get(CONF_LAT) in (None, ""):
+                errors[CONF_LAT] = "required"
+            if user_input.get(CONF_LON) in (None, ""):
+                errors[CONF_LON] = "required"
+
+            if not errors:
+                self._data.update(user_input)
+                return self.async_create_entry(title="Fahrradwetter", data=self._data)
 
         schema = vol.Schema(
             {
                 vol.Required(CONF_API_KEY): _api_key_selector(),
-                vol.Required(CONF_LAT, default=ha_lat): _lat_selector(ha_lat),
-                vol.Required(CONF_LON, default=ha_lon): _lon_selector(ha_lon),
+                vol.Required(CONF_LAT, default=home_lat): _lat_selector(),
+                vol.Required(CONF_LON, default=home_lon): _lon_selector(),
 
-                # comma-separated list, stored as list[str] in entry.data[CONF_TIMES]
-                vol.Required(CONF_TIMES, default=_times_default_str(DEFAULT_TIMES)): selector.TextSelector(
-                    selector.TextSelectorConfig(
-                        multiline=False,
-                        placeholder="z.B. 06:30, 16:00",
-                    )
-                ),
-
-                vol.Required(CONF_MIN_TEMP, default=float(DEFAULT_MIN_TEMP)): selector.NumberSelector(
-                    selector.NumberSelectorConfig(
-                        min=-30,
-                        max=50,
-                        step=0.5,
-                        mode=selector.NumberSelectorMode.SLIDER,
-                        unit_of_measurement="°C",
-                    )
-                ),
-                vol.Required(CONF_MAX_WIND_KMH, default=float(DEFAULT_MAX_WIND_KMH)): selector.NumberSelector(
-                    selector.NumberSelectorConfig(
-                        min=0,
-                        max=200,
-                        step=1,
-                        mode=selector.NumberSelectorMode.SLIDER,
-                        unit_of_measurement="km/h",
-                    )
-                ),
-                vol.Required(CONF_MAX_RAIN, default=float(DEFAULT_MAX_RAIN)): selector.NumberSelector(
-                    selector.NumberSelectorConfig(
-                        min=0,
-                        max=100,
-                        step=0.1,
-                        mode=selector.NumberSelectorMode.SLIDER,
-                        unit_of_measurement="mm",
-                    )
-                ),
+                vol.Optional(CONF_TOMORROW_TIME_1, default=defaults[CONF_TOMORROW_TIME_1]): selector.TimeSelector(),
+                vol.Optional(CONF_TOMORROW_TIME_2, default=defaults[CONF_TOMORROW_TIME_2]): selector.TimeSelector(),
+                vol.Optional(CONF_UPDATE_INTERVAL, default=defaults[CONF_UPDATE_INTERVAL]): _update_interval_selector(defaults[CONF_UPDATE_INTERVAL]),
+                vol.Optional(CONF_WIND_UNIT, default=defaults[CONF_WIND_UNIT]): _wind_unit_selector(defaults[CONF_WIND_UNIT]),
             }
         )
+        return self.async_show_form(step_id="owm", data_schema=schema, errors=errors)
 
-        return self.async_show_form(step_id="user", data_schema=schema, errors=errors)
+    async def async_step_hybrid(self, user_input=None):
+        """Hybrid: local sensors + OWM forecast/fallback."""
+        errors = {}
+        defaults = _defaults(self._data)
+        home_lat, home_lon = self._home_lat_lon_defaults()
+
+        if user_input is not None:
+            if not user_input.get(CONF_API_KEY):
+                errors[CONF_API_KEY] = "required"
+            if user_input.get(CONF_LAT) in (None, ""):
+                errors[CONF_LAT] = "required"
+            if user_input.get(CONF_LON) in (None, ""):
+                errors[CONF_LON] = "required"
+            if not user_input.get(CONF_LOCAL_TEMP_ENTITY):
+                errors[CONF_LOCAL_TEMP_ENTITY] = "required"
+
+            if not errors:
+                self._data.update(user_input)
+                return self.async_create_entry(title="Fahrradwetter", data=self._data)
+
+        schema = vol.Schema(
+            {
+                vol.Required(CONF_API_KEY): _api_key_selector(),
+                vol.Required(CONF_LAT, default=home_lat): _lat_selector(),
+                vol.Required(CONF_LON, default=home_lon): _lon_selector(),
+
+                vol.Required(CONF_LOCAL_TEMP_ENTITY): _sensor_entity_selector(),
+                vol.Optional(CONF_LOCAL_WIND_ENTITY): _sensor_entity_selector(),
+                vol.Optional(CONF_LOCAL_RAIN_ENTITY): _sensor_entity_selector(),
+
+                vol.Optional(CONF_TOMORROW_TIME_1, default=defaults[CONF_TOMORROW_TIME_1]): selector.TimeSelector(),
+                vol.Optional(CONF_TOMORROW_TIME_2, default=defaults[CONF_TOMORROW_TIME_2]): selector.TimeSelector(),
+                vol.Optional(CONF_UPDATE_INTERVAL, default=defaults[CONF_UPDATE_INTERVAL]): _update_interval_selector(defaults[CONF_UPDATE_INTERVAL]),
+                vol.Optional(CONF_WIND_UNIT, default=defaults[CONF_WIND_UNIT]): _wind_unit_selector(defaults[CONF_WIND_UNIT]),
+            }
+        )
+        return self.async_show_form(step_id="hybrid", data_schema=schema, errors=errors)
 
     @staticmethod
     def async_get_options_flow(config_entry: config_entries.ConfigEntry):
@@ -202,82 +279,135 @@ class FahrradwetterConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
 
 class FahrradwetterOptionsFlowHandler(config_entries.OptionsFlow):
-    """Options flow: adjust times/thresholds without re-adding integration."""
+    """Handle options flow for Fahrradwetter."""
 
     def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
         self.config_entry = config_entry
+        self._mode: str = config_entry.options.get(
+            CONF_MODE, config_entry.data.get(CONF_MODE, MODE_HYBRID)
+        )
+        self._opts: dict = dict(config_entry.options)
 
-    async def async_step_init(self, user_input: dict[str, Any] | None = None):
-        errors: dict[str, str] = {}
+    def _current(self, key: str, default=None):
+        if key in self._opts:
+            return self._opts.get(key)
+        return self.config_entry.data.get(key, default)
 
-        current_data = self.config_entry.data
-        current_opts = self.config_entry.options
-
-        def cur(key: str, default: Any):
-            return current_opts.get(key, current_data.get(key, default))
-
-        ha_lat = float(self.hass.config.latitude or 0.0)
-        ha_lon = float(self.hass.config.longitude or 0.0)
-
+    async def async_step_init(self, user_input=None):
         if user_input is not None:
-            api_key = (user_input.get(CONF_API_KEY) or "").strip()
-            if not api_key:
-                errors[CONF_API_KEY] = "required"
+            self._mode = user_input[CONF_MODE]
+            self._opts[CONF_MODE] = self._mode
 
-            lat = user_input.get(CONF_LAT)
-            lon = user_input.get(CONF_LON)
-            if lat is None:
-                errors[CONF_LAT] = "required"
-            if lon is None:
-                errors[CONF_LON] = "required"
-
-            try:
-                times = _parse_times(user_input.get(CONF_TIMES, ""))
-            except ValueError:
-                errors[CONF_TIMES] = "invalid_times"
-
-            try:
-                min_temp = float(user_input.get(CONF_MIN_TEMP, DEFAULT_MIN_TEMP))
-                max_wind = float(user_input.get(CONF_MAX_WIND_KMH, DEFAULT_MAX_WIND_KMH))
-                max_rain = float(user_input.get(CONF_MAX_RAIN, DEFAULT_MAX_RAIN))
-            except Exception:
-                errors["base"] = "invalid_values"
-
-            if not errors:
-                # store as options so user can tune without recreating entry
-                return self.async_create_entry(
-                    title="",
-                    data={
-                        CONF_API_KEY: api_key,
-                        CONF_LAT: float(lat),
-                        CONF_LON: float(lon),
-                        CONF_TIMES: times,
-                        CONF_MIN_TEMP: float(min_temp),
-                        CONF_MAX_WIND_KMH: float(max_wind),
-                        CONF_MAX_RAIN: float(max_rain),
-                    },
-                )
+            if self._mode == MODE_LOCAL:
+                return await self.async_step_local()
+            if self._mode == MODE_OWM:
+                return await self.async_step_owm()
+            return await self.async_step_hybrid()
 
         schema = vol.Schema(
             {
-                vol.Required(CONF_API_KEY, default=str(cur(CONF_API_KEY, ""))): _api_key_selector(),
-                vol.Required(CONF_LAT, default=float(cur(CONF_LAT, ha_lat))): _lat_selector(ha_lat),
-                vol.Required(CONF_LON, default=float(cur(CONF_LON, ha_lon))): _lon_selector(ha_lon),
-
-                vol.Required(CONF_TIMES, default=_times_default_str(cur(CONF_TIMES, DEFAULT_TIMES))): selector.TextSelector(
-                    selector.TextSelectorConfig(multiline=False, placeholder="z.B. 06:30, 16:00")
-                ),
-
-                vol.Required(CONF_MIN_TEMP, default=float(cur(CONF_MIN_TEMP, DEFAULT_MIN_TEMP))): selector.NumberSelector(
-                    selector.NumberSelectorConfig(min=-30, max=50, step=0.5, mode=selector.NumberSelectorMode.SLIDER, unit_of_measurement="°C")
-                ),
-                vol.Required(CONF_MAX_WIND_KMH, default=float(cur(CONF_MAX_WIND_KMH, DEFAULT_MAX_WIND_KMH))): selector.NumberSelector(
-                    selector.NumberSelectorConfig(min=0, max=200, step=1, mode=selector.NumberSelectorMode.SLIDER, unit_of_measurement="km/h")
-                ),
-                vol.Required(CONF_MAX_RAIN, default=float(cur(CONF_MAX_RAIN, DEFAULT_MAX_RAIN))): selector.NumberSelector(
-                    selector.NumberSelectorConfig(min=0, max=100, step=0.1, mode=selector.NumberSelectorMode.SLIDER, unit_of_measurement="mm")
-                ),
+                vol.Required(CONF_MODE, default=self._mode): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=[
+                            {"value": MODE_HYBRID, "label": "Hybrid (lokal + OWM Forecast/Fallback)"},
+                            {"value": MODE_OWM, "label": "Nur OpenWeatherMap (mit Forecast)"},
+                            {"value": MODE_LOCAL, "label": "Nur lokale Sensoren (ohne Forecast)"},
+                        ],
+                        mode=selector.SelectSelectorMode.DROPDOWN,
+                    )
+                )
             }
         )
+        return self.async_show_form(step_id="init", data_schema=schema)
 
-        return self.async_show_form(step_id="init", data_schema=schema, errors=errors)
+    async def async_step_local(self, user_input=None):
+        errors = {}
+        defaults = _defaults(self._opts)
+
+        if user_input is not None:
+            if not user_input.get(CONF_LOCAL_TEMP_ENTITY):
+                errors[CONF_LOCAL_TEMP_ENTITY] = "required"
+            if not errors:
+                self._opts.update(user_input)
+                self._opts[CONF_MODE] = MODE_LOCAL
+                return self.async_create_entry(title="", data=self._opts)
+
+        schema = vol.Schema(
+            {
+                vol.Required(CONF_LOCAL_TEMP_ENTITY, default=self._current(CONF_LOCAL_TEMP_ENTITY, "")): _sensor_entity_selector(),
+                vol.Optional(CONF_LOCAL_WIND_ENTITY, default=self._current(CONF_LOCAL_WIND_ENTITY, "")): _sensor_entity_selector(),
+                vol.Optional(CONF_LOCAL_RAIN_ENTITY, default=self._current(CONF_LOCAL_RAIN_ENTITY, "")): _sensor_entity_selector(),
+
+                vol.Optional(CONF_TOMORROW_TIME_1, default=defaults[CONF_TOMORROW_TIME_1]): selector.TimeSelector(),
+                vol.Optional(CONF_TOMORROW_TIME_2, default=defaults[CONF_TOMORROW_TIME_2]): selector.TimeSelector(),
+                vol.Optional(CONF_UPDATE_INTERVAL, default=defaults[CONF_UPDATE_INTERVAL]): _update_interval_selector(defaults[CONF_UPDATE_INTERVAL]),
+                vol.Optional(CONF_WIND_UNIT, default=defaults[CONF_WIND_UNIT]): _wind_unit_selector(defaults[CONF_WIND_UNIT]),
+            }
+        )
+        return self.async_show_form(step_id="local", data_schema=schema, errors=errors)
+
+    async def async_step_owm(self, user_input=None):
+        errors = {}
+        defaults = _defaults(self._opts)
+
+        if user_input is not None:
+            if not user_input.get(CONF_API_KEY):
+                errors[CONF_API_KEY] = "required"
+            if user_input.get(CONF_LAT) in (None, ""):
+                errors[CONF_LAT] = "required"
+            if user_input.get(CONF_LON) in (None, ""):
+                errors[CONF_LON] = "required"
+            if not errors:
+                self._opts.update(user_input)
+                self._opts[CONF_MODE] = MODE_OWM
+                return self.async_create_entry(title="", data=self._opts)
+
+        schema = vol.Schema(
+            {
+                vol.Required(CONF_API_KEY, default=self._current(CONF_API_KEY, "")): _api_key_selector(),
+                vol.Required(CONF_LAT, default=self._current(CONF_LAT, 0.0)): _lat_selector(),
+                vol.Required(CONF_LON, default=self._current(CONF_LON, 0.0)): _lon_selector(),
+
+                vol.Optional(CONF_TOMORROW_TIME_1, default=defaults[CONF_TOMORROW_TIME_1]): selector.TimeSelector(),
+                vol.Optional(CONF_TOMORROW_TIME_2, default=defaults[CONF_TOMORROW_TIME_2]): selector.TimeSelector(),
+                vol.Optional(CONF_UPDATE_INTERVAL, default=defaults[CONF_UPDATE_INTERVAL]): _update_interval_selector(defaults[CONF_UPDATE_INTERVAL]),
+                vol.Optional(CONF_WIND_UNIT, default=defaults[CONF_WIND_UNIT]): _wind_unit_selector(defaults[CONF_WIND_UNIT]),
+            }
+        )
+        return self.async_show_form(step_id="owm", data_schema=schema, errors=errors)
+
+    async def async_step_hybrid(self, user_input=None):
+        errors = {}
+        defaults = _defaults(self._opts)
+
+        if user_input is not None:
+            if not user_input.get(CONF_API_KEY):
+                errors[CONF_API_KEY] = "required"
+            if user_input.get(CONF_LAT) in (None, ""):
+                errors[CONF_LAT] = "required"
+            if user_input.get(CONF_LON) in (None, ""):
+                errors[CONF_LON] = "required"
+            if not user_input.get(CONF_LOCAL_TEMP_ENTITY):
+                errors[CONF_LOCAL_TEMP_ENTITY] = "required"
+            if not errors:
+                self._opts.update(user_input)
+                self._opts[CONF_MODE] = MODE_HYBRID
+                return self.async_create_entry(title="", data=self._opts)
+
+        schema = vol.Schema(
+            {
+                vol.Required(CONF_API_KEY, default=self._current(CONF_API_KEY, "")): _api_key_selector(),
+                vol.Required(CONF_LAT, default=self._current(CONF_LAT, 0.0)): _lat_selector(),
+                vol.Required(CONF_LON, default=self._current(CONF_LON, 0.0)): _lon_selector(),
+
+                vol.Required(CONF_LOCAL_TEMP_ENTITY, default=self._current(CONF_LOCAL_TEMP_ENTITY, "")): _sensor_entity_selector(),
+                vol.Optional(CONF_LOCAL_WIND_ENTITY, default=self._current(CONF_LOCAL_WIND_ENTITY, "")): _sensor_entity_selector(),
+                vol.Optional(CONF_LOCAL_RAIN_ENTITY, default=self._current(CONF_LOCAL_RAIN_ENTITY, "")): _sensor_entity_selector(),
+
+                vol.Optional(CONF_TOMORROW_TIME_1, default=defaults[CONF_TOMORROW_TIME_1]): selector.TimeSelector(),
+                vol.Optional(CONF_TOMORROW_TIME_2, default=defaults[CONF_TOMORROW_TIME_2]): selector.TimeSelector(),
+                vol.Optional(CONF_UPDATE_INTERVAL, default=defaults[CONF_UPDATE_INTERVAL]): _update_interval_selector(defaults[CONF_UPDATE_INTERVAL]),
+                vol.Optional(CONF_WIND_UNIT, default=defaults[CONF_WIND_UNIT]): _wind_unit_selector(defaults[CONF_WIND_UNIT]),
+            }
+        )
+        return self.async_show_form(step_id="hybrid", data_schema=schema, errors=errors)
