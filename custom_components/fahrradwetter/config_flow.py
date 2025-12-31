@@ -196,10 +196,44 @@ class FahrradwetterConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
 
 class FahrradwetterOptionsFlowHandler(config_entries.OptionsFlow):
+    """Options flow for Fahrradwetter."""
+
     def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
         self.config_entry = config_entry
 
     async def async_step_init(self, user_input=None):
-        # Simple: options = same as initial setup
-        # (Du kannst hier später getrennte Options einbauen, aber so crasht nix.)
-        return await FahrradwetterConfigFlow.async_step_user(self, user_input)
+        """Handle options."""
+        if user_input is not None:
+            return self.async_create_entry(title="", data=user_input)
+
+        data = {**self.config_entry.data, **self.config_entry.options}
+
+        schema = vol.Schema(
+            {
+                vol.Optional(CONF_UPDATE_INTERVAL, default=data.get(CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL_MIN)):
+                    selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=5,
+                            max=180,
+                            step=5,
+                            mode=selector.NumberSelectorMode.SLIDER,
+                            unit_of_measurement="min",
+                        )
+                    ),
+                vol.Optional(CONF_WIND_UNIT, default=data.get(CONF_WIND_UNIT, WIND_UNIT_KMH)):
+                    selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=[
+                                {"value": WIND_UNIT_KMH, "label": "km/h"},
+                                {"value": WIND_UNIT_MS, "label": "m/s"},
+                            ],
+                            mode=selector.SelectSelectorMode.DROPDOWN,
+                        )
+                    ),
+            }
+        )
+
+        return self.async_show_form(
+            step_id="init",
+            data_schema=schema,
+        )
