@@ -3,175 +3,119 @@ from __future__ import annotations
 import voluptuous as vol
 
 from homeassistant import config_entries
-from homeassistant.const import CONF_NAME
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers.selector import (
-    SelectSelector, SelectSelectorConfig, SelectSelectorMode,
-    EntitySelector, EntitySelectorConfig,
-    NumberSelector, NumberSelectorConfig, NumberSelectorMode,
-    TextSelector, TextSelectorConfig,
+    TextSelector,
+    TextSelectorConfig,
+    EntitySelector,
+    EntitySelectorConfig,
+    SelectSelector,
+    SelectSelectorConfig,
 )
 
 from .const import (
     DOMAIN,
-    CONF_SOURCE_MODE,
-    CONF_OWM_API_KEY,
+    CONF_API_KEY,
     CONF_LAT,
     CONF_LON,
-    CONF_LANG,
-    CONF_UNITS,
-    CONF_UPDATE_INTERVAL,
-    CONF_TEMP_ENTITY,
-    CONF_WIND_ENTITY,
-    CONF_RAIN_ENTITY,
-    CONF_FORECAST_ENTITY,
-    CONF_FALLBACK_TEMP_ENTITY,
-    CONF_TIMES,
-    CONF_MIN_TEMP,
-    CONF_MAX_WIND_KMH,
-    CONF_MAX_RAIN,
-    DEFAULT_TIMES,
-    DEFAULT_LANG,
-    DEFAULT_UNITS,
-    DEFAULT_UPDATE_INTERVAL,
-    DEFAULT_MIN_TEMP,
-    DEFAULT_MAX_WIND_KMH,
-    DEFAULT_MAX_RAIN,
+    CONF_MODE,
+    MODE_OWM_ONLY,
+    MODE_LOCAL_ONLY,
+    MODE_HYBRID,
+    CONF_LOCAL_TEMP_ENTITY,
+    CONF_LOCAL_WIND_ENTITY,
+    CONF_LOCAL_RAIN_ENTITY,
+    CONF_LOCAL_WIND_UNIT,
+    WIND_UNIT_MS,
+    WIND_UNIT_KMH,
+    CONF_TIME_MORNING,
+    CONF_TIME_AFTERNOON,
 )
 
-def _times_str(times: list[str] | None) -> str:
-    return ",".join(times or DEFAULT_TIMES)
-
-def _parse_times(s: str | None) -> list[str]:
-    raw = (s or "").strip()
-    times = [t.strip() for t in raw.split(",") if t.strip()]
-    out = []
-    for t in times:
-        if len(t) == 5 and t[2] == ":":
-            out.append(t)
-    return out or DEFAULT_TIMES
-
-COMMON_SCHEMA = {
-    vol.Optional(CONF_TIMES, default=_times_str(DEFAULT_TIMES)): TextSelector(TextSelectorConfig(multiline=False)),
-    vol.Optional(CONF_MIN_TEMP, default=DEFAULT_MIN_TEMP):
-        NumberSelector(NumberSelectorConfig(min=-30, max=40, step=0.5, mode=NumberSelectorMode.BOX)),
-    vol.Optional(CONF_MAX_WIND_KMH, default=DEFAULT_MAX_WIND_KMH):
-        NumberSelector(NumberSelectorConfig(min=0, max=120, step=0.5, mode=NumberSelectorMode.BOX)),
-    vol.Optional(CONF_MAX_RAIN, default=DEFAULT_MAX_RAIN):
-        NumberSelector(NumberSelectorConfig(min=0, max=50, step=0.1, mode=NumberSelectorMode.BOX)),
-    vol.Optional(CONF_UPDATE_INTERVAL, default=DEFAULT_UPDATE_INTERVAL):
-        NumberSelector(NumberSelectorConfig(min=5, max=180, step=5, mode=NumberSelectorMode.BOX)),
+DEFAULTS = {
+    CONF_MODE: MODE_HYBRID,
+    CONF_TIME_MORNING: "06:30",
+    CONF_TIME_AFTERNOON: "16:00",
+    CONF_LOCAL_WIND_UNIT: WIND_UNIT_MS,
 }
+
+def _base_schema(user_input: dict | None = None):
+    ui = user_input or {}
+    return vol.Schema(
+        {
+            vol.Required(CONF_MODE, default=ui.get(CONF_MODE, DEFAULTS[CONF_MODE])): SelectSelector(
+                SelectSelectorConfig(
+                    options=[
+                        {"value": MODE_HYBRID, "label": "Hybrid (lokal bevorzugt + OWM Fallback + Forecast)"},
+                        {"value": MODE_OWM_ONLY, "label": "Nur OpenWeatherMap (OWM)"},
+                        {"value": MODE_LOCAL_ONLY, "label": "Nur lokale Sensoren (ohne Forecast)"},
+                    ],
+                    mode="dropdown",
+                )
+            ),
+            vol.Optional(CONF_API_KEY, default=ui.get(CONF_API_KEY, "")): TextSelector(TextSelectorConfig(type="password")),
+            vol.Required(CONF_LAT, default=ui.get(CONF_LAT, "")): TextSelector(TextSelectorConfig()),
+            vol.Required(CONF_LON, default=ui.get(CONF_LON, "")): TextSelector(TextSelectorConfig()),
+            vol.Optional(CONF_LOCAL_TEMP_ENTITY, default=ui.get(CONF_LOCAL_TEMP_ENTITY, "")): EntitySelector(
+                EntitySelectorConfig(domain="sensor")
+            ),
+            vol.Optional(CONF_LOCAL_WIND_ENTITY, default=ui.get(CONF_LOCAL_WIND_ENTITY, "")): EntitySelector(
+                EntitySelectorConfig(domain="sensor")
+            ),
+            vol.Optional(CONF_LOCAL_RAIN_ENTITY, default=ui.get(CONF_LOCAL_RAIN_ENTITY, "")): EntitySelector(
+                EntitySelectorConfig(domain="sensor")
+            ),
+            vol.Optional(CONF_LOCAL_WIND_UNIT, default=ui.get(CONF_LOCAL_WIND_UNIT, DEFAULTS[CONF_LOCAL_WIND_UNIT])): SelectSelector(
+                SelectSelectorConfig(
+                    options=[
+                        {"value": WIND_UNIT_MS, "label": "m/s"},
+                        {"value": WIND_UNIT_KMH, "label": "km/h"},
+                    ],
+                    mode="dropdown",
+                )
+            ),
+            vol.Required(CONF_TIME_MORNING, default=ui.get(CONF_TIME_MORNING, DEFAULTS[CONF_TIME_MORNING])): TextSelector(
+                TextSelectorConfig()
+            ),
+            vol.Required(CONF_TIME_AFTERNOON, default=ui.get(CONF_TIME_AFTERNOON, DEFAULTS[CONF_TIME_AFTERNOON])): TextSelector(
+                TextSelectorConfig()
+            ),
+        }
+    )
+
+def _validate_input(data: dict):
+    mode = data.get(CONF_MODE, MODE_HYBRID)
+
+    # OWM ist Pflicht für owm_only und hybrid (weil Forecast)
+    if mode in (MODE_OWM_ONLY, MODE_HYBRID):
+        if not data.get(CONF_API_KEY):
+            return "missing_api_key"
+        if not data.get(CONF_LAT) or not data.get(CONF_LON):
+            return "missing_lat_lon"
+
+    # local_only braucht zumindest TEMP+WIND+RAIN oder du bekommst "unvollständig"
+    if mode == MODE_LOCAL_ONLY:
+        if not (data.get(CONF_LOCAL_TEMP_ENTITY) and data.get(CONF_LOCAL_WIND_ENTITY) and data.get(CONF_LOCAL_RAIN_ENTITY)):
+            return "missing_local_entities"
+
+    return None
 
 class FahrradwetterConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     VERSION = 1
 
     async def async_step_user(self, user_input=None):
-        if user_input is None:
-            schema = vol.Schema({
-                vol.Required(CONF_SOURCE_MODE, default="owm"):
-                    SelectSelector(
-                        SelectSelectorConfig(
-                            options=[
-                                {"value": "owm", "label": "OpenWeatherMap direkt (API Key)"},
-                                {"value": "entities", "label": "Vorhandene Sensoren/Entities nutzen"},
-                            ],
-                            mode=SelectSelectorMode.DROPDOWN,
-                        )
-                    ),
-                vol.Optional(CONF_NAME, default="Fahrradwetter"): str,
-            })
-            return self.async_show_form(step_id="user", data_schema=schema)
+        errors = {}
 
-        self._name = user_input.get(CONF_NAME, "Fahrradwetter")
-        self._mode = user_input[CONF_SOURCE_MODE]
-        if self._mode == "owm":
-            return await self.async_step_owm()
-        return await self.async_step_entities()
+        if user_input is not None:
+            err = _validate_input(user_input)
+            if err:
+                errors["base"] = err
+            else:
+                title = "Fahrradwetter"
+                return self.async_create_entry(title=title, data=user_input)
 
-    async def async_step_owm(self, user_input=None):
-        if user_input is None:
-            schema = vol.Schema({
-                **COMMON_SCHEMA,
-                vol.Required(CONF_OWM_API_KEY): str,
-                vol.Required(CONF_LAT): vol.Coerce(float),
-                vol.Required(CONF_LON): vol.Coerce(float),
-                vol.Optional(CONF_LANG, default=DEFAULT_LANG): str,
-                vol.Optional(CONF_UNITS, default=DEFAULT_UNITS):
-                    SelectSelector(SelectSelectorConfig(options=["metric", "imperial"], mode=SelectSelectorMode.DROPDOWN)),
-            })
-            return self.async_show_form(step_id="owm", data_schema=schema)
-
-        data = dict(user_input)
-        data[CONF_SOURCE_MODE] = "owm"
-        data[CONF_TIMES] = _parse_times(data.get(CONF_TIMES))
-
-        options = {
-            CONF_LANG: data.pop(CONF_LANG, DEFAULT_LANG),
-            CONF_UNITS: data.pop(CONF_UNITS, DEFAULT_UNITS),
-            CONF_UPDATE_INTERVAL: data.get(CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL),
-            CONF_TIMES: data.get(CONF_TIMES, DEFAULT_TIMES),
-            CONF_MIN_TEMP: data.get(CONF_MIN_TEMP, DEFAULT_MIN_TEMP),
-            CONF_MAX_WIND_KMH: data.get(CONF_MAX_WIND_KMH, DEFAULT_MAX_WIND_KMH),
-            CONF_MAX_RAIN: data.get(CONF_MAX_RAIN, DEFAULT_MAX_RAIN),
-        }
-        return self.async_create_entry(title=self._name, data=data, options=options)
-
-    async def async_step_entities(self, user_input=None):
-        if user_input is None:
-            schema = vol.Schema({
-                **COMMON_SCHEMA,
-                vol.Required(CONF_TEMP_ENTITY): EntitySelector(EntitySelectorConfig(domain="sensor")),
-                vol.Required(CONF_WIND_ENTITY): EntitySelector(EntitySelectorConfig(domain="sensor")),
-                vol.Required(CONF_RAIN_ENTITY): EntitySelector(EntitySelectorConfig(domain="sensor")),
-                vol.Optional(CONF_FALLBACK_TEMP_ENTITY): EntitySelector(EntitySelectorConfig(domain="sensor")),
-                vol.Required(CONF_FORECAST_ENTITY): EntitySelector(EntitySelectorConfig(domain="sensor")),
-            })
-            return self.async_show_form(step_id="entities", data_schema=schema)
-
-        data = dict(user_input)
-        data[CONF_SOURCE_MODE] = "entities"
-        data[CONF_TIMES] = _parse_times(data.get(CONF_TIMES))
-
-        options = {
-            CONF_UPDATE_INTERVAL: data.get(CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL),
-            CONF_TIMES: data.get(CONF_TIMES, DEFAULT_TIMES),
-            CONF_MIN_TEMP: data.get(CONF_MIN_TEMP, DEFAULT_MIN_TEMP),
-            CONF_MAX_WIND_KMH: data.get(CONF_MAX_WIND_KMH, DEFAULT_MAX_WIND_KMH),
-            CONF_MAX_RAIN: data.get(CONF_MAX_RAIN, DEFAULT_MAX_RAIN),
-        }
-        return self.async_create_entry(title=self._name, data=data, options=options)
-
-    @staticmethod
-    def async_get_options_flow(config_entry: config_entries.ConfigEntry):
-        return FahrradwetterOptionsFlow(config_entry)
-
-class FahrradwetterOptionsFlow(config_entries.OptionsFlow):
-    def __init__(self, entry: config_entries.ConfigEntry):
-        self.entry = entry
-
-    async def async_step_init(self, user_input=None):
-        if user_input is None:
-            schema = vol.Schema({
-                vol.Optional(CONF_TIMES, default=_times_str(self.entry.options.get(CONF_TIMES, DEFAULT_TIMES))):
-                    TextSelector(TextSelectorConfig(multiline=False)),
-                vol.Optional(CONF_MIN_TEMP, default=self.entry.options.get(CONF_MIN_TEMP, DEFAULT_MIN_TEMP)):
-                    NumberSelector(NumberSelectorConfig(min=-30, max=40, step=0.5, mode=NumberSelectorMode.BOX)),
-                vol.Optional(CONF_MAX_WIND_KMH, default=self.entry.options.get(CONF_MAX_WIND_KMH, DEFAULT_MAX_WIND_KMH)):
-                    NumberSelector(NumberSelectorConfig(min=0, max=120, step=0.5, mode=NumberSelectorMode.BOX)),
-                vol.Optional(CONF_MAX_RAIN, default=self.entry.options.get(CONF_MAX_RAIN, DEFAULT_MAX_RAIN)):
-                    NumberSelector(NumberSelectorConfig(min=0, max=50, step=0.1, mode=NumberSelectorMode.BOX)),
-                vol.Optional(CONF_UPDATE_INTERVAL, default=self.entry.options.get(CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL)):
-                    NumberSelector(NumberSelectorConfig(min=5, max=180, step=5, mode=NumberSelectorMode.BOX)),
-            })
-            if self.entry.data.get(CONF_SOURCE_MODE) == "owm":
-                schema = schema.extend({
-                    vol.Optional(CONF_LANG, default=self.entry.options.get(CONF_LANG, DEFAULT_LANG)): str,
-                    vol.Optional(CONF_UNITS, default=self.entry.options.get(CONF_UNITS, DEFAULT_UNITS)):
-                        SelectSelector(SelectSelectorConfig(options=["metric", "imperial"], mode=SelectSelectorMode.DROPDOWN)),
-                })
-            return self.async_show_form(step_id="init", data_schema=schema)
-
-        opts = dict(self.entry.options)
-        opts.update(user_input)
-        opts[CONF_TIMES] = _parse_times(opts.get(CONF_TIMES))
-        return self.async_create_entry(title="", data=opts)
+        return self.async_show_form(
+            step_id="user",
+            data_schema=_base_schema(user_input),
+            errors=errors,
+        )
