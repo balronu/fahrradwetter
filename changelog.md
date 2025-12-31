@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.1.8
+- Bugfixes
+
+## 1.1.7
+- Bugfixes
+
+## 1.1.6
+- Bugfixes 
+
 ## 1.1.5
 - Bugfixes
 
