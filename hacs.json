@@ -1,9 +1,6 @@
 {
   "name": "Fahrradwetter",
   "content_in_root": false,
-  "domains": [
-    "fahrradwetter"
-  ],
-  "country": "DE",
-  "homeassistant": "2024.6.0"
+  "render_readme": true,
+  "zip_release": true
 }
